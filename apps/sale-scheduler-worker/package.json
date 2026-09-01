@@ -1,0 +1,20 @@
+{
+  "name": "@sale-scheduler/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc --outDir dist --declaration false",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@sale-scheduler/colorme-api": "workspace:*",
+    "@sale-scheduler/colorme-auth": "workspace:*",
+    "@sale-scheduler/database": "workspace:*",
+    "@sale-scheduler/jobs": "workspace:*",
+    "@sale-scheduler/shared": "workspace:*",
+    "tsx": "4.19.4"
+  }
+}

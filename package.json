@@ -1,0 +1,33 @@
+{
+  "name": "sale-scheduler-colorme",
+  "version": "0.1.0",
+  "private": true,
+  "description": "カラーミーショップの商品価格を安全に予約変更・復元するアプリ",
+  "packageManager": "pnpm@11.19.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @sale-scheduler/web dev",
+    "dev:worker": "pnpm --filter @sale-scheduler/worker dev",
+    "build": "pnpm --filter @sale-scheduler/web build && pnpm --filter @sale-scheduler/worker build",
+    "start": "pnpm --filter @sale-scheduler/web start",
+    "start:worker": "pnpm --filter @sale-scheduler/worker start",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "tsx packages/database/src/migrate.ts",
+    "db:check": "tsx packages/database/src/check.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.31.0",
+    "@types/node": "22.15.21",
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "eslint": "9.31.0",
+    "globals": "16.3.0",
+    "tsx": "4.19.4",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.37.0",
+    "vitest": "3.1.2"
+  }
+}

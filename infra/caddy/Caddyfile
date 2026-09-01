@@ -1,0 +1,5 @@
+{$APP_DOMAIN} {
+  encode gzip
+  header -Server
+  reverse_proxy web:3000
+}
