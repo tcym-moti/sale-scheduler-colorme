@@ -26,6 +26,17 @@ pnpm build
 docker compose build web worker migrate
 ```
 
+実装時の確認結果（2026-09-01）:
+
+- lint: 成功
+- typecheck: 成功
+- Unit／Fake API／PostgreSQL／Worker統合: 17件成功
+- Next.js production build: 成功
+- Worker production build: 成功
+- Docker image build（web／worker／migrate）: 成功
+- GitHub Actions CI（quality／docker）: 成功
+- ローカルComposeの`/api/health`: `{"ok":true}`を確認
+
 PostgreSQL統合テストを実行する場合は`DATABASE_URL`を設定し、migrationを適用します。テスト用DBは本番DBと分離してください。
 
 ## 実ショップE2E
@@ -40,3 +51,5 @@ PostgreSQL統合テストを実行する場合は`DATABASE_URL`を設定し、mi
 6. 終了後に自動復元されず、アプリがCONFLICTになることを確認
 
 テストショップの元価格は開始前に記録し、異常時もその価格へ戻せる状態を維持します。大量商品・有料ショップ・本番ドメインではテストしません。
+
+新規の独立ColorMe OAuth Appが未登録のため、独立アプリとしてのテストショップOAuth／価格変更E2EとConflict E2Eは、OAuth App登録後の未完了項目です。既存Bulk Image UploaderのOAuth secretやtokenは流用しません。
