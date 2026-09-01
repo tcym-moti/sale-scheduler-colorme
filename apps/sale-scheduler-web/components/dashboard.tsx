@@ -10,7 +10,16 @@ type Detail = Schedule & { items: Array<{ id: string; productId: number; product
 
 const yen = (value: number | null) => value === null ? "—" : `${value.toLocaleString("ja-JP")}円`;
 const dateTime = (value: string) => new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", dateStyle: "short", timeStyle: "short" }).format(new Date(value));
-const localInput = (date: Date) => { const offset = date.getTimezoneOffset() * 60_000; return new Date(date.getTime() - offset).toISOString().slice(0, 16); };
+const localInput = (date: Date) => {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
+};
+const jstInputToIso = (value: string) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return "";
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]) - 9, Number(match[5]))).toISOString();
+};
 const statusLabel: Record<string, string> = { SCHEDULED: "予約中", STARTING: "開始処理中", ACTIVE: "実施中", ENDING: "終了処理中", COMPLETED: "完了", PARTIAL: "一部完了", CONFLICT: "Conflict", FAILED: "失敗", CANCELLED: "キャンセル" };
 const statusClass = (status: string) => status === "COMPLETED" ? "success" : ["CONFLICT", "FAILED", "PARTIAL"].includes(status) ? "danger" : ["SCHEDULED", "STARTING", "ACTIVE", "ENDING"].includes(status) ? "warning" : "";
 
@@ -49,7 +58,7 @@ export default function Dashboard({ shopName, accountId }: { shopName: string; a
   useEffect(() => { void fetch("/api/csrf").then(() => Promise.all([loadProducts(""), loadSchedules()])); }, []);
 
   function body() {
-    return { productIds: selected, pricingMode: mode, pricingValue: Number(value), startAt: new Date(startAt).toISOString(), endAt: new Date(endAt).toISOString() };
+    return { productIds: selected, pricingMode: mode, pricingValue: Number(value), startAt: jstInputToIso(startAt), endAt: jstInputToIso(endAt) };
   }
   async function requestPreview() {
     setBusy(true); setError(null); setMessage(null);
