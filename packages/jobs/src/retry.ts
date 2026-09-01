@@ -1,6 +1,13 @@
 import { ColormeApiError, ColormeNetworkError, retryDelayMs } from "@sale-scheduler/colorme-api";
+import { userFacingError, type ErrorCode } from "@sale-scheduler/shared";
 
 export const MAX_RETRIES = 5;
+
+export class JobError extends Error {
+  constructor(readonly code: ErrorCode, message = userFacingError(code)) {
+    super(message);
+  }
+}
 
 export function isRetryableJobError(error: unknown): boolean {
   if (error instanceof ColormeNetworkError) return true;
@@ -18,6 +25,7 @@ export function responseStatusForError(error: unknown): number | null {
 }
 
 export function errorCodeForJob(error: unknown): string {
+  if (error instanceof JobError) return error.code;
   if (error instanceof ColormeApiError || error instanceof ColormeNetworkError) return error.code;
   return "INTERNAL_ERROR";
 }

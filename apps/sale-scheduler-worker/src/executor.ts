@@ -14,6 +14,7 @@ import {
 } from "@sale-scheduler/database";
 import {
   MAX_RETRIES,
+  JobError,
   PostgresShopRateLimiter,
   errorCodeForJob,
   isRetryableJobError,
@@ -125,11 +126,11 @@ async function startJob(job: ScheduleJobRow, dependencies: JobExecutorDependenci
     return retryOrFail(job, dependencies, error, job.mutationState === "UNKNOWN" ? "UNKNOWN" : "NOT_STARTED");
   }
   if (product.variantCount > 0) {
-    const error = new Error(userFacingError("PRODUCT_HAS_VARIANTS"));
+    const error = new JobError("PRODUCT_HAS_VARIANTS");
     return retryOrFail(job, dependencies, error, "NOT_STARTED");
   }
   if (product.salesPrice === null) {
-    const error = new Error(userFacingError("COLORME_VALIDATION_ERROR"));
+    const error = new JobError("COLORME_VALIDATION_ERROR");
     return retryOrFail(job, dependencies, error, "NOT_STARTED");
   }
 
@@ -233,7 +234,7 @@ async function endJob(job: ScheduleJobRow, dependencies: JobExecutorDependencies
   }
   const effectiveOriginalPrice = job.effectiveOriginalPrice;
   if (effectiveOriginalPrice === null) {
-    const error = new Error("復元元価格が保存されていないため、価格を変更しませんでした。");
+    const error = new JobError("INTERNAL_ERROR", "復元元価格が保存されていないため、価格を変更しませんでした。");
     return retryOrFail(job, dependencies, error, "NOT_STARTED");
   }
   if (product.salesPrice === effectiveOriginalPrice) {

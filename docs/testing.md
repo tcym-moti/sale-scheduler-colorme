@@ -30,7 +30,7 @@ docker compose build web worker migrate
 
 - lint: 成功
 - typecheck: 成功
-- Unit／Fake API／PostgreSQL／Worker統合: 17件成功
+- Unit／認証／Fake API／PostgreSQL／Worker統合: 20件成功
 - Next.js production build: 成功
 - Worker production build: 成功
 - Docker image build（web／worker／migrate）: 成功

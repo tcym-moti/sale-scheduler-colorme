@@ -25,9 +25,11 @@ export function buildAuthorizationUrl(state: string, redirectUri = oauthRedirect
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("response_type", "code");
-  const scopes = (process.env.COLORME_SCOPES || REQUIRED_COLORME_SCOPES.join(" ")).split(/\s+/).filter(Boolean);
-  if (!REQUIRED_COLORME_SCOPES.every((scope) => scopes.includes(scope))) throw new Error("COLORME_SCOPES must include read_products and write_products");
-  url.searchParams.set("scope", [...new Set(scopes)].join(" "));
+  const configuredScopes = (process.env.COLORME_SCOPES || REQUIRED_COLORME_SCOPES.join(" ")).split(/\s+/).filter(Boolean);
+  if (!REQUIRED_COLORME_SCOPES.every((scope) => configuredScopes.includes(scope))) throw new Error("COLORME_SCOPES must include read_products and write_products");
+  // Keep the requested grant minimal even if an environment file contains an
+  // accidental extra scope.
+  url.searchParams.set("scope", REQUIRED_COLORME_SCOPES.join(" "));
   url.searchParams.set("state", state);
   return url.toString();
 }
@@ -55,7 +57,7 @@ export async function exchangeAuthorizationCode(code: string, redirectUri = oaut
   const accessToken = typeof payload.access_token === "string" ? payload.access_token : "";
   if (!accessToken) throw new Error("アクセストークンを取得できませんでした。");
   const expiresIn = Number(payload.expires_in);
-  const configuredScopes = (process.env.COLORME_SCOPES || REQUIRED_COLORME_SCOPES.join(" ")).split(/\s+/).filter(Boolean);
+  const configuredScopes = [...REQUIRED_COLORME_SCOPES];
   return {
     accessToken,
     refreshToken: typeof payload.refresh_token === "string" ? payload.refresh_token : null,

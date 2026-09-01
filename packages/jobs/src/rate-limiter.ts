@@ -13,6 +13,10 @@ export interface RateLimiterOptions {
 
 const sleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
+function positiveInteger(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
 /**
  * A small PostgreSQL-backed sliding-window limiter. The transaction advisory
  * lock serializes the check and insert for each shop across all workers.
@@ -23,9 +27,9 @@ export class PostgresShopRateLimiter implements ShopRateLimiter {
   private readonly maxWaitMs: number;
 
   constructor(private readonly db: Database, options: RateLimiterOptions = {}) {
-    this.maxRequests = Math.max(1, Math.floor(options.maxRequests ?? Number(process.env.API_RATE_LIMIT_REQUESTS ?? 4)));
-    this.windowMs = Math.max(1_000, Math.floor(options.windowMs ?? Number(process.env.API_RATE_LIMIT_WINDOW_MS ?? 10_000)));
-    this.maxWaitMs = Math.max(this.windowMs * 2, Math.floor(options.maxWaitMs ?? 120_000));
+    this.maxRequests = positiveInteger(options.maxRequests ?? Number(process.env.API_RATE_LIMIT_REQUESTS ?? 4), 4);
+    this.windowMs = Math.max(1_000, positiveInteger(options.windowMs ?? Number(process.env.API_RATE_LIMIT_WINDOW_MS ?? 10_000), 10_000));
+    this.maxWaitMs = Math.max(this.windowMs * 2, positiveInteger(options.maxWaitMs ?? 120_000, 120_000));
   }
 
   async acquire(shopId: string): Promise<void> {
