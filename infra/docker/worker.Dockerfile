@@ -17,4 +17,6 @@ COPY . .
 RUN pnpm --filter @sale-scheduler/worker build
 ENV NODE_ENV=production
 USER node
-CMD ["node", "apps/sale-scheduler-worker/dist/index.js"]
+# Workspace package exports point to TypeScript sources. tsx keeps the
+# independent worker image runnable without bundling unrelated applications.
+CMD ["./node_modules/.bin/tsx", "apps/sale-scheduler-worker/src/index.ts"]
