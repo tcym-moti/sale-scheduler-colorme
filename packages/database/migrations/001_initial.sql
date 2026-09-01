@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS sale_schedule_items (
   effective_original_price INTEGER,
   scheduled_price INTEGER NOT NULL CHECK (scheduled_price >= 100),
   current_price INTEGER,
-  status TEXT NOT NULL CHECK (status IN ('PENDING', 'STARTING', 'ACTIVE', 'ENDING', 'COMPLETED', 'PARTIAL', 'CONFLICT', 'FAILED', 'CANCELLED', 'RETRY_WAIT')),
+  status TEXT NOT NULL CHECK (status IN ('PENDING', 'STARTING', 'ACTIVE', 'ENDING', 'COMPLETED', 'PARTIAL', 'CONFLICT', 'VERIFY_PENDING', 'VERIFY_UNKNOWN', 'POST_WRITE_DIVERGENCE', 'FAILED', 'CANCELLED', 'RETRY_WAIT')),
   conflict_reason TEXT,
   last_error TEXT,
   retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),

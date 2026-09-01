@@ -18,6 +18,8 @@ export interface FakeCall {
 export class FakeColormeApi {
   private readonly products = new Map<number, FakeProduct>();
   private readonly failures: Array<{ method: string; path: RegExp; status: number }> = [];
+  private readonly delayedWriteReads = new Map<number, number[][]>();
+  private readonly pendingReadSequence = new Map<number, number[]>();
   readonly calls: FakeCall[] = [];
   private readonly server = createServer((request, response) => { void this.handle(request, response); });
 
@@ -48,6 +50,13 @@ export class FakeColormeApi {
     this.failures.push({ method, path, status });
   }
 
+  /** Queue observed GET prices for the next PUT on a product. */
+  delayNextWriteVerification(productId: number, observedPrices: number[]): void {
+    const queued = this.delayedWriteReads.get(productId) ?? [];
+    queued.push([...observedPrices]);
+    this.delayedWriteReads.set(productId, queued);
+  }
+
   product(productId: number): FakeProduct | undefined {
     const product = this.products.get(productId);
     return product ? { ...product, variants: [...(product.variants ?? [])] } : undefined;
@@ -74,10 +83,26 @@ export class FakeColormeApi {
     const productId = Number(match[1]);
     const product = this.products.get(productId);
     if (!product) { this.send(response, 404, { errors: [{ code: "NOT_FOUND", message: "not found", status: 404 }] }); return; }
-    if (method === "GET") { this.send(response, 200, { product }); return; }
+    if (method === "GET") {
+      const sequence = this.pendingReadSequence.get(productId);
+      if (sequence?.length) {
+        const observedPrice = sequence.shift() as number;
+        if (!sequence.length) this.pendingReadSequence.delete(productId);
+        this.send(response, 200, { product: { ...product, sales_price: observedPrice } });
+        return;
+      }
+      this.send(response, 200, { product });
+      return;
+    }
     if (method === "PUT") {
       const salesPrice = (body as { product?: { sales_price?: unknown } } | null)?.product?.sales_price;
       if (!Number.isSafeInteger(salesPrice)) { this.send(response, 422, { errors: [{ code: "INVALID", message: "invalid price", status: 422 }] }); return; }
+      const delayedReads = this.delayedWriteReads.get(productId);
+      if (delayedReads?.length) {
+        const sequence = delayedReads.shift() as number[];
+        this.pendingReadSequence.set(productId, sequence);
+        if (!delayedReads.length) this.delayedWriteReads.delete(productId);
+      }
       product.sales_price = salesPrice as number;
       this.send(response, 200, { product });
       return;

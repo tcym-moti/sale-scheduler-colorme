@@ -278,7 +278,7 @@ export async function listScheduleSummaries(db: Queryable, shopId: string, limit
        COUNT(i.id)::int AS item_count,
        COUNT(i.id) FILTER (WHERE i.status = 'COMPLETED')::int AS completed_count,
        COUNT(i.id) FILTER (WHERE i.status = 'ACTIVE')::int AS active_count,
-       COUNT(i.id) FILTER (WHERE i.status = 'FAILED')::int AS failed_count,
+       COUNT(i.id) FILTER (WHERE i.status IN ('FAILED', 'VERIFY_UNKNOWN', 'POST_WRITE_DIVERGENCE'))::int AS failed_count,
        COUNT(i.id) FILTER (WHERE i.status = 'CONFLICT')::int AS conflict_count
        FROM sale_schedules AS s LEFT JOIN sale_schedule_items AS i ON i.schedule_id = s.id
       WHERE s.shop_id = $1 GROUP BY s.id ORDER BY s.created_at DESC LIMIT $2`,
@@ -319,8 +319,9 @@ export async function requestScheduleEnd(db: Database, shopId: string, scheduleI
     if (!result.rows[0]) return null;
     const current = mapSchedule(result.rows[0] as Record<string, unknown>);
     if (!["ACTIVE", "PARTIAL", "CONFLICT", "ENDING"].includes(current.status)) throw new Error("SCHEDULE_NOT_ACTIVE");
-    await client.query("UPDATE sale_schedules SET status = 'ENDING', updated_at = NOW() WHERE id = $1", [scheduleId]);
     const activeItems = await client.query("SELECT id FROM sale_schedule_items WHERE schedule_id = $1 AND status = 'ACTIVE' FOR UPDATE", [scheduleId]);
+    if (current.status === "CONFLICT" && activeItems.rowCount === 0) return current;
+    await client.query("UPDATE sale_schedules SET status = 'ENDING', updated_at = NOW() WHERE id = $1", [scheduleId]);
     for (const raw of activeItems.rows) {
       const itemId = String((raw as Record<string, unknown>).id);
       await client.query(
@@ -339,7 +340,10 @@ export async function retryFailedSchedule(db: Database, shopId: string, schedule
   return db.withTransaction(async (client) => {
     const scheduleResult = await client.query(`SELECT ${scheduleColumns} FROM sale_schedules WHERE id = $1 AND shop_id = $2 FOR UPDATE`, [scheduleId, shopId]);
     if (!scheduleResult.rows[0]) return { retried: 0, schedule: null };
-    const jobs = await client.query("SELECT id, item_id, operation FROM sale_jobs WHERE schedule_id = $1 AND status = 'FAILED'", [scheduleId]);
+    const jobs = await client.query(
+      "SELECT j.id, j.item_id, j.operation FROM sale_jobs j JOIN sale_schedule_items i ON i.id = j.item_id WHERE j.schedule_id = $1 AND j.status = 'FAILED' AND i.status = 'FAILED'",
+      [scheduleId]
+    );
     let retried = 0;
     let hasStart = false;
     let hasEnd = false;
@@ -396,7 +400,7 @@ export async function recoverExpiredJobs(db: Database): Promise<string[]> {
     const result = await client.query("UPDATE sale_jobs SET status = 'QUEUED', lease_until = NULL, worker_id = NULL, mutation_state = CASE WHEN mutation_state = 'IN_FLIGHT' THEN 'UNKNOWN' ELSE mutation_state END, updated_at = NOW() WHERE status = 'RUNNING' AND lease_until IS NOT NULL AND lease_until < NOW() RETURNING id, item_id, operation");
     for (const raw of result.rows) {
       const row = raw as Record<string, unknown>;
-      await client.query("UPDATE sale_schedule_items SET status = CASE WHEN $2 = 'START' THEN 'PENDING' ELSE 'ACTIVE' END, updated_at = NOW() WHERE id = $1 AND status IN ('STARTING', 'ENDING')", [row.item_id, row.operation]);
+      await client.query("UPDATE sale_schedule_items SET status = CASE WHEN $2 = 'START' THEN 'PENDING' ELSE 'ACTIVE' END, updated_at = NOW() WHERE id = $1 AND status IN ('STARTING', 'ENDING', 'VERIFY_PENDING')", [row.item_id, row.operation]);
     }
     return result.rows.map((row) => String((row as Record<string, unknown>).id));
   });
@@ -414,8 +418,8 @@ async function refreshScheduleStatus(client: Queryable, scheduleId: string): Pro
   let status: ScheduleStatus;
   if (total > 0 && count("CANCELLED") === total) status = "CANCELLED";
   else if (count("CONFLICT") > 0) status = "CONFLICT";
-  else if (count("FAILED") > 0) {
-    const remainingOrCompleted = count("PENDING") + count("RETRY_WAIT") + count("STARTING") + count("ACTIVE") + count("ENDING") + count("COMPLETED");
+  else if (count("FAILED") > 0 || count("VERIFY_UNKNOWN") > 0 || count("POST_WRITE_DIVERGENCE") > 0) {
+    const remainingOrCompleted = count("PENDING") + count("RETRY_WAIT") + count("STARTING") + count("ACTIVE") + count("ENDING") + count("VERIFY_PENDING") + count("COMPLETED");
     status = remainingOrCompleted > 0 ? "PARTIAL" : "FAILED";
   }
   else if (total > 0 && count("COMPLETED") === total) status = "COMPLETED";
@@ -428,6 +432,10 @@ async function refreshScheduleStatus(client: Queryable, scheduleId: string): Pro
 
 export async function setEffectiveOriginalPrice(db: Database, itemId: string, currentPrice: number): Promise<void> {
   await db.query("UPDATE sale_schedule_items SET effective_original_price = COALESCE(effective_original_price, $2), current_price = $2, updated_at = NOW() WHERE id = $1", [itemId, currentPrice]);
+}
+
+export async function setVerificationPending(db: Database, itemId: string): Promise<void> {
+  await db.query("UPDATE sale_schedule_items SET status = 'VERIFY_PENDING', last_error = NULL, conflict_reason = NULL, updated_at = NOW() WHERE id = $1", [itemId]);
 }
 
 export async function completeStartJob(db: Database, jobId: string, itemId: string, scheduleId: string, responseStatus = 200): Promise<void> {
@@ -464,6 +472,24 @@ export async function markJobConflict(db: Database, jobId: string, itemId: strin
   await db.withTransaction(async (client) => {
     await client.query("UPDATE sale_jobs SET status = 'SUCCEEDED', mutation_state = 'CONFIRMED', last_error = $2, lease_until = NULL, worker_id = NULL, updated_at = NOW() WHERE id = $1", [jobId, reason]);
     await client.query("UPDATE sale_schedule_items SET status = 'CONFLICT', current_price = $2, conflict_reason = $3, last_error = $3, updated_at = NOW() WHERE id = $1", [itemId, currentPrice, reason]);
+    await client.query("UPDATE sale_schedules SET last_error = $2, updated_at = NOW() WHERE id = $1", [scheduleId, reason]);
+    await refreshScheduleStatus(client, scheduleId);
+  });
+}
+
+export async function markVerificationUncertain(
+  db: Database,
+  jobId: string,
+  itemId: string,
+  scheduleId: string,
+  status: "VERIFY_UNKNOWN" | "POST_WRITE_DIVERGENCE",
+  currentPrice: number | null,
+  reason: string,
+  responseStatus: number | null = 200
+): Promise<void> {
+  await db.withTransaction(async (client) => {
+    await client.query("UPDATE sale_jobs SET status = 'FAILED', mutation_state = 'UNKNOWN', last_error = $2, last_response_status = $3, lease_until = NULL, worker_id = NULL, updated_at = NOW() WHERE id = $1", [jobId, reason, responseStatus]);
+    await client.query("UPDATE sale_schedule_items SET status = $2, current_price = $3, conflict_reason = NULL, last_error = $4, updated_at = NOW() WHERE id = $1", [itemId, status, currentPrice, reason]);
     await client.query("UPDATE sale_schedules SET last_error = $2, updated_at = NOW() WHERE id = $1", [scheduleId, reason]);
     await refreshScheduleStatus(client, scheduleId);
   });

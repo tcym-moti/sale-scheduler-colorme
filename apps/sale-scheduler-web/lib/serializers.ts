@@ -34,7 +34,7 @@ export function detailView(schedule: ScheduleRow, items: ScheduleItemRow[]): Sch
     itemCount: items.length,
     completedCount: items.filter((item) => item.status === "COMPLETED").length,
     activeCount: items.filter((item) => item.status === "ACTIVE").length,
-    failedCount: items.filter((item) => item.status === "FAILED").length,
+    failedCount: items.filter((item) => ["FAILED", "VERIFY_UNKNOWN", "POST_WRITE_DIVERGENCE"].includes(item.status)).length,
     conflictCount: items.filter((item) => item.status === "CONFLICT").length,
     createdAt: schedule.createdAt
   };

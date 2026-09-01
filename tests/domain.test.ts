@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateDiscountedPrice, calculateScheduledPrice, canTransitionSchedule, schedulesOverlap, shouldRestore, validateDiscountRate, validateSalePrice } from "@sale-scheduler/shared";
+import { calculateDiscountedPrice, calculateScheduledPrice, canTransitionSchedule, classifyWriteVerification, schedulesOverlap, shouldRestore, validateDiscountRate, validateSalePrice, verificationDelayMs } from "@sale-scheduler/shared";
 
 describe("sale price rules", () => {
   it("calculates discount prices by rounding down to integer yen", () => {
@@ -28,6 +28,15 @@ describe("schedule safety rules", () => {
     expect(shouldRestore(3980, 3980)).toBe(true);
     expect(shouldRestore(4500, 3980)).toBe(false);
     expect(shouldRestore(null, 3980)).toBe(false);
+  });
+  it("separates pre-write conflicts from post-write verification outcomes", () => {
+    expect(classifyWriteVerification(1000, 800, 1000)).toBe("CONFIRMED");
+    expect(classifyWriteVerification(1000, 800, 800)).toBe("VERIFY_UNKNOWN");
+    expect(classifyWriteVerification(1000, 800, 900)).toBe("POST_WRITE_DIVERGENCE");
+  });
+  it("uses bounded exponential verification delays", () => {
+    expect([1, 2, 3, 4].map((attempt) => verificationDelayMs(500, attempt))).toEqual([500, 1000, 2000, 4000]);
+    expect(verificationDelayMs(0, 1)).toBe(0);
   });
   it("allows only defined schedule transitions", () => {
     expect(canTransitionSchedule("SCHEDULED", "STARTING")).toBe(true);

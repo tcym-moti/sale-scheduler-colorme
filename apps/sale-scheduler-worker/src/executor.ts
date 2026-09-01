@@ -5,8 +5,10 @@ import {
   completeStartJob,
   failJobPermanently,
   markJobConflict,
+  markVerificationUncertain,
   recordAudit,
   scheduleJobRetry,
+  setVerificationPending,
   setEffectiveOriginalPrice,
   setJobMutationState,
   type Database,
@@ -22,7 +24,7 @@ import {
   retryAfterForJob,
   type ShopRateLimiter
 } from "@sale-scheduler/jobs";
-import { ERROR_CODES, type ErrorCode, userFacingError } from "@sale-scheduler/shared";
+import { classifyWriteVerification, ERROR_CODES, type ErrorCode, type WriteVerificationOutcome, userFacingError, verificationDelayMs } from "@sale-scheduler/shared";
 
 export interface JobExecutorDependencies {
   db: Database;
@@ -32,7 +34,7 @@ export interface JobExecutorDependencies {
   requestId?: (job: ScheduleJobRow) => string;
 }
 
-export type JobExecutionResult = "COMPLETED" | "RETRY_WAIT" | "FAILED" | "CONFLICT" | "CANCELLED";
+export type JobExecutionResult = "COMPLETED" | "RETRY_WAIT" | "FAILED" | "CONFLICT" | "VERIFY_UNKNOWN" | "POST_WRITE_DIVERGENCE" | "CANCELLED";
 
 function nowOf(dependencies: JobExecutorDependencies): Date {
   return dependencies.now?.() ?? new Date();
@@ -53,6 +55,120 @@ function responseStatus(error: unknown): number | null {
 
 function endpoint(job: ScheduleJobRow): string {
   return `/v1/products/${job.productId}`;
+}
+
+function boundedEnvInteger(name: string, fallback: number, minimum: number, maximum: number): number {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(value)));
+}
+
+function verificationMaxAttempts(): number {
+  return boundedEnvInteger("VERIFY_MAX_ATTEMPTS", 5, 1, 10);
+}
+
+function verificationBackoffMs(): number {
+  return boundedEnvInteger("VERIFY_BACKOFF_MS", 500, 0, 30_000);
+}
+
+const sleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+interface VerificationResult {
+  outcome: WriteVerificationOutcome;
+  observedPrice: number | null;
+  attempts: number;
+  maxAttempts: number;
+}
+
+type VerificationFailureResult = Omit<VerificationResult, "outcome"> & { outcome: "VERIFY_UNKNOWN" | "POST_WRITE_DIVERGENCE" };
+
+function isVerificationFailure(result: VerificationResult): result is VerificationFailureResult {
+  return result.outcome !== "CONFIRMED";
+}
+
+async function verifyPriceAfterWrite(
+  job: ScheduleJobRow,
+  dependencies: JobExecutorDependencies,
+  client: ColormeClient,
+  operation: "START" | "END",
+  expectedPrice: number,
+  previousPrice: number | null
+): Promise<VerificationResult> {
+  const maxAttempts = verificationMaxAttempts();
+  const baseDelayMs = verificationBackoffMs();
+  let observedPrice: number | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let product;
+    try {
+      product = await getProduct(job, dependencies, client);
+    } catch (error) {
+      await recordAudit(dependencies.db, {
+        requestId: dependencies.requestId?.(job) ?? job.id,
+        shopId: job.shopId,
+        scheduleId: job.scheduleId,
+        itemId: job.itemId,
+        eventType: `${operation}_PRICE_UPDATE_VERIFICATION_ERROR`,
+        endpoint: endpoint(job),
+        responseStatus: responseStatus(error),
+        retryCount: attempt - 1,
+        errorCode: errorCodeForJob(error),
+        metadata: { expectedPrice, previousPrice, attempt, maxAttempts, result: "ERROR" }
+      });
+      throw error;
+    }
+    observedPrice = product.salesPrice;
+    const confirmed = observedPrice === expectedPrice;
+    await recordAudit(dependencies.db, {
+      requestId: dependencies.requestId?.(job) ?? job.id,
+      shopId: job.shopId,
+      scheduleId: job.scheduleId,
+      itemId: job.itemId,
+      eventType: `${operation}_PRICE_UPDATE_VERIFICATION`,
+      endpoint: endpoint(job),
+      responseStatus: 200,
+      retryCount: attempt - 1,
+      metadata: { expectedPrice, previousPrice, observedPrice, attempt, maxAttempts, result: confirmed ? "CONFIRMED" : "VERIFY_PENDING" }
+    });
+    if (confirmed) return { outcome: "CONFIRMED", observedPrice, attempts: attempt, maxAttempts };
+    if (attempt < maxAttempts) await sleep(verificationDelayMs(baseDelayMs, attempt));
+  }
+  return { outcome: classifyWriteVerification(expectedPrice, previousPrice, observedPrice), observedPrice, attempts: maxAttempts, maxAttempts };
+}
+
+function verificationFailureReason(operation: "START" | "END", result: VerificationResult, expectedPrice: number, previousPrice: number | null): string {
+  const observed = result.observedPrice === null ? "不明" : `${result.observedPrice}円`;
+  if (result.outcome === "VERIFY_UNKNOWN") {
+    const target = operation === "START" ? "セール価格" : "元価格";
+    return `${target}${expectedPrice}円への変更後、${result.attempts}回確認しても反映を確認できませんでした（最終観測価格: ${observed}）。追加の価格変更は行っていません。`;
+  }
+  return `価格変更後に第三の価格${observed}が${result.attempts}回目の確認で観測されました（期待値: ${expectedPrice}円、変更前価格: ${previousPrice ?? "不明"}）。追加の価格変更は行っていません。`;
+}
+
+async function finishVerificationFailure(
+  job: ScheduleJobRow,
+  dependencies: JobExecutorDependencies,
+  operation: "START" | "END",
+  result: VerificationFailureResult,
+  expectedPrice: number,
+  previousPrice: number | null
+): Promise<JobExecutionResult> {
+  const reason = verificationFailureReason(operation, result, expectedPrice, previousPrice);
+  await markVerificationUncertain(dependencies.db, job.id, job.itemId, job.scheduleId, result.outcome, result.observedPrice, reason, 200);
+  await recordAudit(dependencies.db, {
+    requestId: dependencies.requestId?.(job) ?? job.id,
+    shopId: job.shopId,
+    scheduleId: job.scheduleId,
+    itemId: job.itemId,
+    eventType: `${operation}_${result.outcome}`,
+    endpoint: endpoint(job),
+    fromPrice: previousPrice,
+    toPrice: expectedPrice,
+    responseStatus: 200,
+    retryCount: result.attempts - 1,
+    errorCode: result.outcome,
+    metadata: { expectedPrice, previousPrice, observedPrice: result.observedPrice, verificationAttempts: result.attempts, maxAttempts: result.maxAttempts, finalResult: result.outcome }
+  });
+  return result.outcome;
 }
 
 async function retryOrFail(
@@ -187,25 +303,9 @@ async function startJob(job: ScheduleJobRow, dependencies: JobExecutorDependenci
 
   try {
     const updated = await client.updateProductPrice(job.productId, job.scheduledPrice, { beforeRequest: () => dependencies.limiter.acquire(job.shopId) });
-    const confirmed = await getProduct(job, dependencies, client);
-    if (confirmed.salesPrice !== job.scheduledPrice) {
-      const reason = `セール価格への変更後に、商品価格が${confirmed.salesPrice ?? "不明"}円でした。安全のため処理を停止しました。`;
-      await markJobConflict(dependencies.db, job.id, job.itemId, job.scheduleId, confirmed.salesPrice, reason);
-      await recordAudit(dependencies.db, {
-        requestId: dependencies.requestId?.(job) ?? job.id,
-        shopId: job.shopId,
-        scheduleId: job.scheduleId,
-        itemId: job.itemId,
-        eventType: "START_VERIFY_CONFLICT",
-        endpoint: endpoint(job),
-        fromPrice: product.salesPrice,
-        toPrice: job.scheduledPrice,
-        responseStatus: 200,
-        errorCode: "CONFLICT",
-        metadata: { observedPrice: confirmed.salesPrice }
-      });
-      return "CONFLICT";
-    }
+    await setVerificationPending(dependencies.db, job.itemId);
+    const verification = await verifyPriceAfterWrite(job, dependencies, client, "START", job.scheduledPrice, product.salesPrice);
+    if (isVerificationFailure(verification)) return finishVerificationFailure(job, dependencies, "START", verification, job.scheduledPrice, product.salesPrice);
     await completeStartJob(dependencies.db, job.id, job.itemId, job.scheduleId, 200);
     await recordAudit(dependencies.db, {
       requestId: dependencies.requestId?.(job) ?? job.id,
@@ -215,9 +315,9 @@ async function startJob(job: ScheduleJobRow, dependencies: JobExecutorDependenci
       eventType: "START_PRICE_UPDATE_CONFIRMED",
       endpoint: endpoint(job),
       fromPrice: product.salesPrice,
-      toPrice: confirmed.salesPrice,
+      toPrice: verification.observedPrice,
       responseStatus: 200,
-      metadata: { apiResponsePrice: updated.salesPrice }
+      metadata: { apiResponsePrice: updated.salesPrice, verificationAttempts: verification.attempts, expectedPrice: job.scheduledPrice, observedPrice: verification.observedPrice, finalResult: verification.outcome }
     });
     return "COMPLETED";
   } catch (error) {
@@ -285,25 +385,9 @@ async function endJob(job: ScheduleJobRow, dependencies: JobExecutorDependencies
   });
   try {
     const updated = await client.updateProductPrice(job.productId, effectiveOriginalPrice, { beforeRequest: () => dependencies.limiter.acquire(job.shopId) });
-    const confirmed = await getProduct(job, dependencies, client);
-    if (confirmed.salesPrice !== effectiveOriginalPrice) {
-      const reason = `元価格への復元後に、商品価格が${confirmed.salesPrice ?? "不明"}円でした。安全のため処理を停止しました。`;
-      await markJobConflict(dependencies.db, job.id, job.itemId, job.scheduleId, confirmed.salesPrice, reason);
-      await recordAudit(dependencies.db, {
-        requestId: dependencies.requestId?.(job) ?? job.id,
-        shopId: job.shopId,
-        scheduleId: job.scheduleId,
-        itemId: job.itemId,
-        eventType: "END_VERIFY_CONFLICT",
-        endpoint: endpoint(job),
-        fromPrice: product.salesPrice,
-        toPrice: effectiveOriginalPrice,
-        responseStatus: 200,
-        errorCode: "CONFLICT",
-        metadata: { observedPrice: confirmed.salesPrice }
-      });
-      return "CONFLICT";
-    }
+    await setVerificationPending(dependencies.db, job.itemId);
+    const verification = await verifyPriceAfterWrite(job, dependencies, client, "END", effectiveOriginalPrice, product.salesPrice);
+    if (isVerificationFailure(verification)) return finishVerificationFailure(job, dependencies, "END", verification, effectiveOriginalPrice, product.salesPrice);
     await completeEndJob(dependencies.db, job.id, job.itemId, job.scheduleId, 200);
     await recordAudit(dependencies.db, {
       requestId: dependencies.requestId?.(job) ?? job.id,
@@ -313,9 +397,9 @@ async function endJob(job: ScheduleJobRow, dependencies: JobExecutorDependencies
       eventType: "END_PRICE_UPDATE_CONFIRMED",
       endpoint: endpoint(job),
       fromPrice: product.salesPrice,
-      toPrice: confirmed.salesPrice,
+      toPrice: verification.observedPrice,
       responseStatus: 200,
-      metadata: { apiResponsePrice: updated.salesPrice }
+      metadata: { apiResponsePrice: updated.salesPrice, verificationAttempts: verification.attempts, expectedPrice: effectiveOriginalPrice, observedPrice: verification.observedPrice, finalResult: verification.outcome }
     });
     return "COMPLETED";
   } catch (error) {

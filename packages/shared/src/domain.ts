@@ -26,11 +26,17 @@ export const ITEM_STATUSES = [
   "COMPLETED",
   "PARTIAL",
   "CONFLICT",
+  "VERIFY_PENDING",
+  "VERIFY_UNKNOWN",
+  "POST_WRITE_DIVERGENCE",
   "FAILED",
   "CANCELLED",
   "RETRY_WAIT"
 ] as const;
 export type ScheduleItemStatus = (typeof ITEM_STATUSES)[number];
+
+export const WRITE_VERIFICATION_OUTCOMES = ["CONFIRMED", "VERIFY_UNKNOWN", "POST_WRITE_DIVERGENCE"] as const;
+export type WriteVerificationOutcome = (typeof WRITE_VERIFICATION_OUTCOMES)[number];
 
 export const JOB_OPERATIONS = ["START", "END"] as const;
 export type JobOperation = (typeof JOB_OPERATIONS)[number];
@@ -47,6 +53,8 @@ export const ERROR_CODES = [
   "SCHEDULE_OVERLAP",
   "SCHEDULE_ENDED_BEFORE_START",
   "CONFLICT",
+  "VERIFY_UNKNOWN",
+  "POST_WRITE_DIVERGENCE",
   "COLORME_RATE_LIMIT",
   "COLORME_TEMPORARY_ERROR",
   "COLORME_AUTH_ERROR",
@@ -158,6 +166,18 @@ export function schedulesOverlap(startAt: Date, endAt: Date, otherStartAt: Date,
 
 export function shouldRestore(currentPrice: number | null, scheduledPrice: number): boolean {
   return currentPrice !== null && currentPrice === scheduledPrice;
+}
+
+export function classifyWriteVerification(expectedPrice: number, previousPrice: number | null, observedPrice: number | null): WriteVerificationOutcome {
+  if (observedPrice === expectedPrice) return "CONFIRMED";
+  if (observedPrice === previousPrice) return "VERIFY_UNKNOWN";
+  return "POST_WRITE_DIVERGENCE";
+}
+
+/** Delay before the next verification GET. attempt is 1-based. */
+export function verificationDelayMs(baseDelayMs: number, attempt: number): number {
+  if (!Number.isFinite(baseDelayMs) || baseDelayMs < 0 || !Number.isInteger(attempt) || attempt < 1) return 0;
+  return Math.min(60_000, Math.floor(baseDelayMs) * (2 ** (attempt - 1)));
 }
 
 export function isRetryableHttpStatus(status: number): boolean {

@@ -20,8 +20,8 @@ const jstInputToIso = (value: string) => {
   if (!match) return "";
   return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]) - 9, Number(match[5]))).toISOString();
 };
-const statusLabel: Record<string, string> = { SCHEDULED: "予約中", STARTING: "開始処理中", ACTIVE: "実施中", ENDING: "終了処理中", COMPLETED: "完了", PARTIAL: "一部完了", CONFLICT: "Conflict", FAILED: "失敗", CANCELLED: "キャンセル" };
-const statusClass = (status: string) => status === "COMPLETED" ? "success" : ["CONFLICT", "FAILED", "PARTIAL"].includes(status) ? "danger" : ["SCHEDULED", "STARTING", "ACTIVE", "ENDING"].includes(status) ? "warning" : "";
+const statusLabel: Record<string, string> = { SCHEDULED: "予約中", STARTING: "開始処理中", ACTIVE: "実施中", ENDING: "終了処理中", COMPLETED: "完了", PARTIAL: "一部完了", CONFLICT: "Conflict", VERIFY_PENDING: "確認中", VERIFY_UNKNOWN: "確認不能", POST_WRITE_DIVERGENCE: "書込後不一致", FAILED: "失敗", CANCELLED: "キャンセル" };
+const statusClass = (status: string) => status === "COMPLETED" ? "success" : ["CONFLICT", "FAILED", "PARTIAL", "VERIFY_UNKNOWN", "POST_WRITE_DIVERGENCE"].includes(status) ? "danger" : ["SCHEDULED", "STARTING", "ACTIVE", "ENDING", "VERIFY_PENDING"].includes(status) ? "warning" : "";
 
 function csrfToken(): string {
   return document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("sale-scheduler-csrf="))?.split("=").slice(1).join("=") ?? "";
