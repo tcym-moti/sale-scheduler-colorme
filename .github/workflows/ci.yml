@@ -41,6 +41,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Validate production Compose and backup script
+        run: |
+          cp .env.production.example .env.production
+          POSTGRES_PASSWORD=ci-only DATABASE_URL=postgresql://sale_scheduler:ci-only@db:5432/sale_scheduler APP_DOMAIN=localhost docker compose --env-file .env.production -f docker-compose.production.yml config --quiet
+          bash -n infra/scripts/backup-postgres.sh
+          rm -f .env.production
       - name: Build production images
         run: |
           POSTGRES_PASSWORD=ci-only APP_DOMAIN=localhost docker compose build web worker migrate

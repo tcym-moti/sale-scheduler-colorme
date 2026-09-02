@@ -1,5 +1,8 @@
 export const JST_TIME_ZONE = "Asia/Tokyo" as const;
 export const MIN_SALE_PRICE = 100;
+export const SAFE_API_RATE_LIMIT_REQUESTS = 4;
+export const SAFE_API_RATE_LIMIT_WINDOW_MS = 10_000;
+export const MIN_API_REQUESTS_PER_ITEM_AND_PHASE = 3;
 
 export const PRICING_MODES = ["FIXED", "DISCOUNT_RATE"] as const;
 export type PricingMode = (typeof PRICING_MODES)[number];
@@ -99,6 +102,8 @@ export interface SchedulePreview {
   startAt: string;
   endAt: string;
   timeZone: typeof JST_TIME_ZONE;
+  estimatedStartSeconds: number;
+  estimatedEndSeconds: number;
   items: SaleScheduleItemPreview[];
   valid: boolean;
 }
@@ -158,6 +163,24 @@ export function calculateScheduledPrice(mode: PricingMode, value: number, curren
   if (currentPrice === null) return null;
   const price = mode === "FIXED" ? value : calculateDiscountedPrice(currentPrice, value);
   return Number.isSafeInteger(price) ? price : null;
+}
+
+/**
+ * Conservative estimate for one phase (start or end). It assumes a minimum
+ * GET → PUT → verification GET per product and the shared shop limiter.
+ * Retries and network latency can make the real duration longer.
+ */
+export function estimateRateLimitedProcessingSeconds(
+  productCount: number,
+  requestsPerItem = MIN_API_REQUESTS_PER_ITEM_AND_PHASE,
+  maxRequests = SAFE_API_RATE_LIMIT_REQUESTS,
+  windowMs = SAFE_API_RATE_LIMIT_WINDOW_MS
+): number {
+  if (!Number.isSafeInteger(productCount) || productCount <= 0) return 0;
+  if (!Number.isSafeInteger(requestsPerItem) || requestsPerItem <= 0) return 0;
+  if (!Number.isSafeInteger(maxRequests) || maxRequests <= 0) return 0;
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return 0;
+  return Math.ceil((productCount * requestsPerItem) / maxRequests) * (windowMs / 1000);
 }
 
 export function schedulesOverlap(startAt: Date, endAt: Date, otherStartAt: Date, otherEndAt: Date): boolean {

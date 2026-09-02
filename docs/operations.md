@@ -1,5 +1,7 @@
 # Operations
 
+Sale Schedulerは、指定した開始日時から商品を順次処理します。API制限、verification retry、ネットワーク遅延により、全商品が同時刻に変更されることや、概算処理時間内に完了することは保証しません。終了時の復元も商品ごとに順次行います。
+
 ## Health
 
 - Web: `GET /api/health`
@@ -28,7 +30,18 @@ Conflictを自動retryして元価格を強制することはありません。
 
 ## DB backup（production checklist）
 
-productionではPostgreSQLの`pg_dump`を毎日実行し、アプリDBとは別の非公開ストレージへ暗号化して保存します。7世代を保持し、バックアップ用認証情報と暗号化パスフレーズはWeb／Workerの環境変数へ共有しません。復元テストを月1回行い、実装・ホストに合わせた具体的なservice／timerはデプロイ時に作成します。
+productionではPostgreSQLの`pg_dump`を毎日実行し、アプリDBとは別の非公開R2バケットへ暗号化して保存します。7世代を保持し、バックアップ用認証情報と暗号化パスフレーズはWeb／Workerの環境変数へ共有しません。
+
+systemdの雛形は`infra/systemd/sale-scheduler-backup.service`と`infra/systemd/sale-scheduler-backup.timer`、実行スクリプトは`infra/scripts/backup-postgres.sh`です。実サーバーへ配置する際は、環境変数ファイルをroot専用・`600`で別途用意し、timerの実行結果とR2オブジェクトを確認してください。restore手順は`docs/operations/disaster-recovery.md`に記載します。復元テストは月1回行います。
+
+## 公開前運用チェック
+
+- `/api/health`、Worker、DBの状態を確認
+- queue backlog、FAILED／CONFLICT／VERIFY_UNKNOWNを確認
+- 80／443以外の外部公開がないことを確認
+- Web／Worker再起動とOS再起動後の自動復旧を確認
+- backup timer、7世代保持、restore手順を確認
+- support、terms、privacyの本番表示を確認
 
 ## Uninstall
 

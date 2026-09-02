@@ -1,5 +1,6 @@
 import {
   calculateScheduledPrice,
+  estimateRateLimitedProcessingSeconds,
   type PricingMode,
   type Product,
   type SchedulePreview,
@@ -64,5 +65,6 @@ export function buildSchedulePreview(input: ParsedScheduleInput, products: Produ
     if (error || scheduledPrice === null) return { productId, productName: product.name, currentPrice: product.salesPrice, scheduledPrice, discountAmount: null, discountRate: null, valid: false, errorCode: scheduledPrice !== null && scheduledPrice < 100 ? "PRICE_TOO_LOW" : "INVALID_INPUT", errorMessage: error ?? "セール価格を算出できません。" };
     return { productId, productName: product.name, currentPrice: product.salesPrice, scheduledPrice, discountAmount: product.salesPrice - scheduledPrice, discountRate: actualDiscountRate(product.salesPrice, scheduledPrice), valid: true, errorCode: null, errorMessage: null };
   });
-  return { pricingMode: input.pricingMode, value: input.pricingValue, startAt: input.startAt.toISOString(), endAt: input.endAt.toISOString(), timeZone: "Asia/Tokyo", items, valid: items.length > 0 && items.every((item) => item.valid) };
+  const estimatedSeconds = estimateRateLimitedProcessingSeconds(input.productIds.length);
+  return { pricingMode: input.pricingMode, value: input.pricingValue, startAt: input.startAt.toISOString(), endAt: input.endAt.toISOString(), timeZone: "Asia/Tokyo", estimatedStartSeconds: estimatedSeconds, estimatedEndSeconds: estimatedSeconds, items, valid: items.length > 0 && items.every((item) => item.valid) };
 }

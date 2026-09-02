@@ -37,8 +37,8 @@ docker compose build web worker migrate
 
 - lint: 成功
 - typecheck: 成功
-- ホスト環境のUnit／認証／Fake API: 12件成功（DB統合14件はDB未接続のためskip）
-- Docker／PostgreSQL接続環境のUnit／認証／Fake API／Worker統合: 26件成功
+- ホスト環境のUnit／認証／Fake API: 13件成功（DB統合14件はDB未接続のためskip）
+- Docker／PostgreSQL接続環境のUnit／認証／Fake API／Worker統合: 27件成功
 - Next.js production build: 成功
 - Worker production build: 成功
 - Docker image build（web／worker／migrate）: 成功
@@ -61,3 +61,29 @@ PostgreSQL統合テストを実行する場合は`DATABASE_URL`を設定し、mi
 6. DBでは予約・商品単位状態・START／END job・監査ログを確認した。通常フローではverification attemptと最終結果、Conflictフローでは観測価格とPUT前判定を確認できた。Workerコンテナは稼働中で、プロセス応答も確認した。
 
 実ショップE2Eは、OAuth、商品取得、通常の開始・終了・元価格復元、read-after-write遅延を考慮した有限verification、手動変更を保護するConflict、DB監査、Worker継続を確認済みとする。大量商品、本番デプロイ、App Store Appへの切り替え、課金設定は実施していない。
+
+### 複数商品E2E（2026-09-02）
+
+テストショップのバリエーションなし商品10件（既存3件＋Sale Scheduler用テスト商品7件）を使い、固定価格800円で、通常フローと手動変更を挟むConflictフローを確認した。UIのPreviewでは、開始・終了とも「約2分」と表示され、API制限により指定時刻から順次反映されること、verification retry等で延長する可能性が表示された。
+
+通常フロー:
+
+- 10件を選択し、Previewで10件すべて「登録可能」を確認。
+- 開始側は10件すべてが800円へ反映され、商品単位`COMPLETED`相当の`ACTIVE`状態、START job 10件が`SUCCEEDED`。
+- 監査ログは`START_PRICE_UPDATE_REQUESTED`、`START_PRICE_UPDATE_VERIFICATION`、`START_PRICE_UPDATE_CONFIRMED`が各10件。
+- 終了側は10件すべてが開始前価格（900〜1,600円）へ復元され、予約全体・商品単位とも`COMPLETED`。END job 10件が`SUCCEEDED`。
+- 監査ログは`END_PRICE_UPDATE_REQUESTED`、`END_PRICE_UPDATE_VERIFICATION`、`END_PRICE_UPDATE_CONFIRMED`が各10件。
+- 開始処理は最初の要求から最後の確認まで約70秒、終了処理は約71秒。Previewの概算を超えるRate Limitエラーやretryは発生しなかった。
+- ColorMe管理画面で10件すべての元価格への復元を確認した。
+
+Conflictフロー:
+
+- 同じ10件を再度800円へ変更する予約を作成し、開始側10件の成功を確認。
+- 商品ID 193300268（開始前価格1,600円）だけを管理画面から850円へ手動変更。
+- 終了前GETで850円を検出した商品はPUTを行わず、商品単位`CONFLICT`として850円を維持。
+- 残り9件は元価格へ復元され、商品単位で9件`COMPLETED`、1件`CONFLICT`、予約全体は`CONFLICT`。
+- `END_CONFLICT`は1件、終了価格更新の要求・検証・確認は各9件。Conflict商品に対する終了PUTは0件。
+- 手動変更商品はテスト後、管理画面から元の1,600円へ戻し、10件すべての最終価格を管理画面で確認した。
+- ConflictフローでもRate Limitエラー、API一時障害、retryは発生しなかった。Conflictによるjobの`last_error`は想定された安全停止の記録であり、再試行による上書きは行っていない。
+
+複数商品E2Eでは、Workerの順次処理、Previewの概算表示、Rate Limit内の処理、商品単位の部分成功、手動変更商品の非破壊的なConflict停止、監査ログを確認済みとする。テスト時刻は検証を短時間で行うため、予約作成後にDB上の開始・終了時刻をテスト用に短縮した。本番運用ではユーザーが指定したJST時刻をそのまま使用する。
